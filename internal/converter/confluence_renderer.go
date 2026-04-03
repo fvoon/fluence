@@ -1,0 +1,478 @@
+package converter
+
+import (
+	"github.com/yuin/goldmark/ast"
+	extast "github.com/yuin/goldmark/extension/ast"
+	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/util"
+)
+
+// ConfluenceRenderer is a renderer that outputs Confluence Storage Format (XHTML).
+type ConfluenceRenderer struct{}
+
+// NewConfluenceRenderer creates a new ConfluenceRenderer.
+func NewConfluenceRenderer() renderer.NodeRenderer {
+	return &ConfluenceRenderer{}
+}
+
+// RegisterFuncs registers node rendering functions.
+func (r *ConfluenceRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+	// Block elements
+	reg.Register(ast.KindDocument, r.renderDocument)
+	reg.Register(ast.KindHeading, r.renderHeading)
+	reg.Register(ast.KindBlockquote, r.renderBlockquote)
+	reg.Register(ast.KindCodeBlock, r.renderCodeBlock)
+	reg.Register(ast.KindFencedCodeBlock, r.renderFencedCodeBlock)
+	reg.Register(ast.KindHTMLBlock, r.renderHTMLBlock)
+	reg.Register(ast.KindList, r.renderList)
+	reg.Register(ast.KindListItem, r.renderListItem)
+	reg.Register(ast.KindParagraph, r.renderParagraph)
+	reg.Register(ast.KindTextBlock, r.renderTextBlock)
+	reg.Register(ast.KindThematicBreak, r.renderThematicBreak)
+
+	// Inline elements
+	reg.Register(ast.KindAutoLink, r.renderAutoLink)
+	reg.Register(ast.KindCodeSpan, r.renderCodeSpan)
+	reg.Register(ast.KindEmphasis, r.renderEmphasis)
+	reg.Register(ast.KindImage, r.renderImage)
+	reg.Register(ast.KindLink, r.renderLink)
+	reg.Register(ast.KindRawHTML, r.renderRawHTML)
+	reg.Register(ast.KindText, r.renderText)
+	reg.Register(ast.KindString, r.renderString)
+
+	// Table extension (GFM)
+	reg.Register(extast.KindTable, r.renderTable)
+	reg.Register(extast.KindTableHeader, r.renderTableHeader)
+	reg.Register(extast.KindTableRow, r.renderTableRow)
+	reg.Register(extast.KindTableCell, r.renderTableCell)
+
+	// Task list extension (GFM)
+	reg.Register(extast.KindTaskCheckBox, r.renderTaskCheckBox)
+
+	// Strikethrough extension (GFM)
+	reg.Register(extast.KindStrikethrough, r.renderStrikethrough)
+}
+
+// Helper to write lines from a node
+func (r *ConfluenceRenderer) writeLines(w util.BufWriter, source []byte, n ast.Node) {
+	l := n.Lines().Len()
+	for i := 0; i < l; i++ {
+		line := n.Lines().At(i)
+		_, _ = w.Write(line.Value(source)) //nolint:errcheck
+	}
+}
+
+// isTaskList checks if a list contains task checkboxes
+func isTaskList(node ast.Node) bool {
+	// Check first list item for a task checkbox
+	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+		if child.Kind() == ast.KindListItem {
+			// Look for TaskCheckBox in the list item's children
+			for grandchild := child.FirstChild(); grandchild != nil; grandchild = grandchild.NextSibling() {
+				// TaskCheckBox can be direct child or inside a paragraph/textblock
+				if grandchild.Kind() == extast.KindTaskCheckBox {
+					return true
+				}
+				// Check inside paragraph or textblock
+				for greatgrandchild := grandchild.FirstChild(); greatgrandchild != nil; greatgrandchild = greatgrandchild.NextSibling() {
+					if greatgrandchild.Kind() == extast.KindTaskCheckBox {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// getTaskCheckBox finds the TaskCheckBox node in a list item
+func getTaskCheckBox(listItem ast.Node) *extast.TaskCheckBox {
+	for child := listItem.FirstChild(); child != nil; child = child.NextSibling() {
+		if child.Kind() == extast.KindTaskCheckBox {
+			return child.(*extast.TaskCheckBox)
+		}
+		// Check inside paragraph or textblock
+		for grandchild := child.FirstChild(); grandchild != nil; grandchild = grandchild.NextSibling() {
+			if grandchild.Kind() == extast.KindTaskCheckBox {
+				return grandchild.(*extast.TaskCheckBox)
+			}
+		}
+	}
+	return nil
+}
+
+// Document
+func (r *ConfluenceRenderer) renderDocument(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	// Don't wrap document in any tags
+	return ast.WalkContinue, nil
+}
+
+// Heading
+func (r *ConfluenceRenderer) renderHeading(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	n := node.(*ast.Heading)
+	if entering {
+		_, _ = w.WriteString("<h")          //nolint:errcheck
+		_ = w.WriteByte("0123456"[n.Level]) //nolint:errcheck
+		_ = w.WriteByte('>')                //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</h")         //nolint:errcheck
+		_ = w.WriteByte("0123456"[n.Level]) //nolint:errcheck
+		_, _ = w.WriteString(">\n")         //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// Blockquote
+func (r *ConfluenceRenderer) renderBlockquote(
+	w util.BufWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		_, _ = w.WriteString("<blockquote>\n") //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</blockquote>\n") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// CodeBlock (indented code)
+func (r *ConfluenceRenderer) renderCodeBlock(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		_, _ = w.WriteString(`<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">none</ac:parameter><ac:plain-text-body><![CDATA[`) //nolint:errcheck
+		r.writeLines(w, source, node)
+	} else {
+		_, _ = w.WriteString("]]></ac:plain-text-body></ac:structured-macro>\n") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// FencedCodeBlock
+func (r *ConfluenceRenderer) renderFencedCodeBlock(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	n := node.(*ast.FencedCodeBlock)
+	if entering {
+		lang := "none"
+		if n.Language(source) != nil {
+			lang = string(n.Language(source))
+		}
+		_, _ = w.WriteString(`<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">`) //nolint:errcheck
+		_, _ = w.WriteString(lang)                                                                    //nolint:errcheck
+		_, _ = w.WriteString(`</ac:parameter><ac:plain-text-body><![CDATA[`)                          //nolint:errcheck
+		r.writeLines(w, source, n)
+	} else {
+		_, _ = w.WriteString("]]></ac:plain-text-body></ac:structured-macro>\n") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// HTMLBlock - skip raw HTML for security
+func (r *ConfluenceRenderer) renderHTMLBlock(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		_, _ = w.WriteString("<!-- raw HTML omitted -->\n") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// List
+func (r *ConfluenceRenderer) renderList(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	n := node.(*ast.List)
+
+	// Check if this is a task list
+	if isTaskList(node) {
+		if entering {
+			_, _ = w.WriteString("<ac:task-list>\n") //nolint:errcheck
+		} else {
+			_, _ = w.WriteString("</ac:task-list>\n") //nolint:errcheck
+		}
+		return ast.WalkContinue, nil
+	}
+
+	// Regular list
+	if entering {
+		if n.IsOrdered() {
+			_, _ = w.WriteString("<ol>\n") //nolint:errcheck
+		} else {
+			_, _ = w.WriteString("<ul>\n") //nolint:errcheck
+		}
+	} else {
+		if n.IsOrdered() {
+			_, _ = w.WriteString("</ol>\n") //nolint:errcheck
+		} else {
+			_, _ = w.WriteString("</ul>\n") //nolint:errcheck
+		}
+	}
+	return ast.WalkContinue, nil
+}
+
+// ListItem
+func (r *ConfluenceRenderer) renderListItem(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	// Check if parent is a task list
+	parent := node.Parent()
+	if parent != nil && isTaskList(parent) {
+		checkbox := getTaskCheckBox(node)
+		if entering {
+			_, _ = w.WriteString("<ac:task>\n") //nolint:errcheck
+			if checkbox != nil && checkbox.IsChecked {
+				_, _ = w.WriteString("<ac:task-status>complete</ac:task-status>\n") //nolint:errcheck
+			} else {
+				_, _ = w.WriteString("<ac:task-status>incomplete</ac:task-status>\n") //nolint:errcheck
+			}
+			_, _ = w.WriteString("<ac:task-body>") //nolint:errcheck
+		} else {
+			_, _ = w.WriteString("</ac:task-body>\n</ac:task>\n") //nolint:errcheck
+		}
+		return ast.WalkContinue, nil
+	}
+
+	// Regular list item
+	if entering {
+		_, _ = w.WriteString("<li>") //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</li>\n") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// Paragraph
+func (r *ConfluenceRenderer) renderParagraph(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	// Skip paragraph tags inside task list items (ac:task-body handles content directly)
+	parent := node.Parent()
+	if parent != nil && parent.Kind() == ast.KindListItem {
+		grandparent := parent.Parent()
+		if grandparent != nil && isTaskList(grandparent) {
+			// Don't wrap task item content in <p> tags
+			return ast.WalkContinue, nil
+		}
+	}
+
+	if entering {
+		_, _ = w.WriteString("<p>") //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</p>\n") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// TextBlock
+func (r *ConfluenceRenderer) renderTextBlock(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if !entering {
+		_ = w.WriteByte('\n') //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// ThematicBreak (horizontal rule)
+func (r *ConfluenceRenderer) renderThematicBreak(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		_, _ = w.WriteString("<hr />\n") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// AutoLink
+func (r *ConfluenceRenderer) renderAutoLink(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	n := node.(*ast.AutoLink)
+	if entering {
+		_, _ = w.WriteString(`<a href="`)                                    //nolint:errcheck
+		_, _ = w.Write(util.EscapeHTML(util.URLEscape(n.URL(source), true))) //nolint:errcheck
+		_, _ = w.WriteString(`">`)                                           //nolint:errcheck
+		_, _ = w.Write(util.EscapeHTML(n.Label(source)))                     //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</a>") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// CodeSpan (inline code)
+func (r *ConfluenceRenderer) renderCodeSpan(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		_, _ = w.WriteString("<code>") //nolint:errcheck
+		for c := node.FirstChild(); c != nil; c = c.NextSibling() {
+			segment := c.(*ast.Text).Segment
+			_, _ = w.Write(segment.Value(source)) //nolint:errcheck
+		}
+		_, _ = w.WriteString("</code>") //nolint:errcheck
+		return ast.WalkSkipChildren, nil
+	}
+	return ast.WalkContinue, nil
+}
+
+// Emphasis (italic or bold)
+func (r *ConfluenceRenderer) renderEmphasis(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	n := node.(*ast.Emphasis)
+	tag := "em"
+	if n.Level == 2 {
+		tag = "strong"
+	}
+	if entering {
+		_ = w.WriteByte('<')      //nolint:errcheck
+		_, _ = w.WriteString(tag) //nolint:errcheck
+		_ = w.WriteByte('>')      //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</") //nolint:errcheck
+		_, _ = w.WriteString(tag)  //nolint:errcheck
+		_ = w.WriteByte('>')       //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// Image
+func (r *ConfluenceRenderer) renderImage(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	n := node.(*ast.Image)
+	if entering {
+		_, _ = w.WriteString(`<ac:image><ri:url ri:value="`)                 //nolint:errcheck
+		_, _ = w.Write(util.EscapeHTML(util.URLEscape(n.Destination, true))) //nolint:errcheck
+		_, _ = w.WriteString(`" /></ac:image>`)                              //nolint:errcheck
+		return ast.WalkSkipChildren, nil
+	}
+	return ast.WalkContinue, nil
+}
+
+// Link
+func (r *ConfluenceRenderer) renderLink(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	n := node.(*ast.Link)
+	if entering {
+		_, _ = w.WriteString(`<a href="`)                                    //nolint:errcheck
+		_, _ = w.Write(util.EscapeHTML(util.URLEscape(n.Destination, true))) //nolint:errcheck
+		_ = w.WriteByte('"')                                                 //nolint:errcheck
+		// Add title attribute if present
+		if len(n.Title) > 0 {
+			_, _ = w.WriteString(` title="`)         //nolint:errcheck
+			_, _ = w.Write(util.EscapeHTML(n.Title)) //nolint:errcheck
+			_ = w.WriteByte('"')                     //nolint:errcheck
+		}
+		_ = w.WriteByte('>') //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</a>") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// RawHTML - skip for security
+func (r *ConfluenceRenderer) renderRawHTML(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	// Skip raw HTML
+	return ast.WalkContinue, nil
+}
+
+// Text
+func (r *ConfluenceRenderer) renderText(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		n := node.(*ast.Text)
+		segment := n.Segment
+		_, _ = w.Write(util.EscapeHTML(segment.Value(source))) //nolint:errcheck
+		if n.HardLineBreak() {
+			_, _ = w.WriteString("<br />\n") //nolint:errcheck
+		} else if n.SoftLineBreak() {
+			_ = w.WriteByte('\n') //nolint:errcheck
+		}
+	}
+	return ast.WalkContinue, nil
+}
+
+// String
+func (r *ConfluenceRenderer) renderString(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		n := node.(*ast.String)
+		_, _ = w.Write(util.EscapeHTML(n.Value)) //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// Table
+func (r *ConfluenceRenderer) renderTable(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		_, _ = w.WriteString("<table><tbody>\n") //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</tbody></table>\n") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// TableHeader
+func (r *ConfluenceRenderer) renderTableHeader(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	// TableHeader is just a container, don't output tags
+	return ast.WalkContinue, nil
+}
+
+// TableRow
+func (r *ConfluenceRenderer) renderTableRow(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		_, _ = w.WriteString("<tr>") //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</tr>\n") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// TableCell
+func (r *ConfluenceRenderer) renderTableCell(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	n := node.(*extast.TableCell)
+	tag := "td"
+	if n.Parent().Kind() == extast.KindTableHeader {
+		tag = "th"
+	}
+
+	if entering {
+		_ = w.WriteByte('<')      //nolint:errcheck
+		_, _ = w.WriteString(tag) //nolint:errcheck
+
+		// Handle alignment
+		if n.Alignment != extast.AlignNone {
+			_, _ = w.WriteString(` align="`) //nolint:errcheck
+			switch n.Alignment {
+			case extast.AlignLeft:
+				_, _ = w.WriteString("left") //nolint:errcheck
+			case extast.AlignCenter:
+				_, _ = w.WriteString("center") //nolint:errcheck
+			case extast.AlignRight:
+				_, _ = w.WriteString("right") //nolint:errcheck
+			}
+			_ = w.WriteByte('"') //nolint:errcheck
+		}
+
+		_ = w.WriteByte('>') //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</") //nolint:errcheck
+		_, _ = w.WriteString(tag)  //nolint:errcheck
+		_ = w.WriteByte('>')       //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
+
+// TaskCheckBox - rendered as part of task list item, skip here
+func (r *ConfluenceRenderer) renderTaskCheckBox(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	// TaskCheckBox is handled by the list/listItem rendering for Confluence task format
+	// Skip rendering here to avoid duplicate output
+	return ast.WalkContinue, nil
+}
+
+// Strikethrough
+func (r *ConfluenceRenderer) renderStrikethrough(
+	w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+	if entering {
+		_, _ = w.WriteString("<del>") //nolint:errcheck
+	} else {
+		_, _ = w.WriteString("</del>") //nolint:errcheck
+	}
+	return ast.WalkContinue, nil
+}
