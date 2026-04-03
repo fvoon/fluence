@@ -35,6 +35,7 @@ flowchart LR
 **Why the difference?**
 
 - **Atlassian MCP** returns Atlassian Document Format (ADF) - deeply nested JSON with metadata, marks, and attributes
+- **Atlassian MCP always loads the full document** into Claude's context window - even for small edits, you pay the full token cost every time
 - **fluence** converts to clean Markdown - the format Claude naturally reads and writes
 
 This means faster responses, lower costs, and Claude can focus on content rather than wrestling with JSON structures.
